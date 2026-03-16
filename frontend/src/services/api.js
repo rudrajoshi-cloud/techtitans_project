@@ -18,4 +18,12 @@ api.interceptors.request.use(
   }
 );
 
+export const sendChatMessage = (messageData) => {
+  return api.post('/chat', messageData);
+};
+
+export const fetchHeatmapData = () => {
+  return api.get('/reports/heatmap');
+}
+
 export default api;

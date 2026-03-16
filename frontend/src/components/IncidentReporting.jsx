@@ -19,8 +19,10 @@ const IncidentReporting = () => {
 
     try {
       await api.post('/reportIncident', {
-        type: incidentType,
-        location: { lat: parseFloat(lat), lng: parseFloat(lng) }
+        category: incidentType,
+        latitude: parseFloat(lat),
+        longitude: parseFloat(lng),
+        description: 'Reported via Dashboard Quick-Form'
       });
       setSuccess(true);
       setLat('');
@@ -74,11 +76,11 @@ const IncidentReporting = () => {
                    value={incidentType}
                    onChange={(e) => setIncidentType(e.target.value)}
                  >
-                   <option value="harassment">Harassment</option>
-                   <option value="suspicious_activity">Suspicious Activity</option>
-                   <option value="poor_lighting">Poor Lighting/Unsafe Area</option>
-                   <option value="assault">Assault</option>
-                   <option value="other">Other</option>
+                   <option value="Harassment reported">Harassment</option>
+                   <option value="Suspicious activity">Suspicious Activity</option>
+                   <option value="Poor lighting">Poor Lighting/Unsafe Area</option>
+                   <option value="Unsafe area">Assault / High Danger</option>
+                   <option value="Safe zone">Mark as Safe Zone</option>
                  </select>
                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-500">
                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>

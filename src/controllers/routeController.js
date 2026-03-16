@@ -80,57 +80,82 @@ export const predictRoute = async (req, res) => {
         name: geoDstData[0].display_name 
     };
 
-    // 2. Get real physical routing between coordinates using OSRM
-    let pathCoords = [];
+    // 2. Get real physical routing between coordinates using OSRM (Request 3 Alternatives)
+    let altRoutes = [];
     try {
-        const osrmData = await makeGetRequest(`https://router.project-osrm.org/route/v1/driving/${srcCoords.lng},${srcCoords.lat};${dstCoords.lng},${dstCoords.lat}?overview=full&geometries=geojson`);
-        if (osrmData.routes && osrmData.routes.length > 0 && osrmData.routes[0].geometry) {
-            // OSRM returns coordinates as [longitude, latitude]
-            pathCoords = osrmData.routes[0].geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+        const osrmData = await makeGetRequest(`https://router.project-osrm.org/route/v1/driving/${srcCoords.lng},${srcCoords.lat};${dstCoords.lng},${dstCoords.lat}?overview=full&geometries=geojson&alternatives=3`);
+        
+        if (osrmData.routes && osrmData.routes.length > 0) {
+            altRoutes = osrmData.routes.map((rt, idx) => ({
+                id: idx,
+                duration: rt.duration, // Seconds
+                distance: rt.distance, // Meters
+                path_coordinates: rt.geometry ? rt.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] })) : []
+            })).filter(r => r.path_coordinates.length > 0);
         }
     } catch (osrmErr) {
         console.warn("OSRM routing failed, falling back to straight line path.");
     }
 
-    if (pathCoords.length === 0) {
-        // Fallback to a straight line linking source and destination so the mapping UI never breaks
-        pathCoords = [
-            { lat: srcCoords.lat, lng: srcCoords.lng },
-            { lat: dstCoords.lat, lng: dstCoords.lng }
-        ];
+    if (altRoutes.length === 0) {
+        // Fallback to a single straight line linking source and destination
+        altRoutes = [{
+            id: 0,
+            duration: 600,
+            distance: 5000,
+            path_coordinates: [
+                { lat: srcCoords.lat, lng: srcCoords.lng },
+                { lat: dstCoords.lat, lng: dstCoords.lng }
+            ]
+        }];
     }
 
-    // 3. Ask the Python AI Service to evaluate the true physical route
+    // 3. Ask the Python AI Service to evaluate EACH physical route
+    const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000/predict_safety';
+    const timeOfDay = new Date().getHours();
+    
+    // We will analyze all routes in parallel
+    const analysisPromises = altRoutes.map(async (routeObj) => {
+        try {
+            const postData = JSON.stringify({
+                time_of_day_hour: timeOfDay,
+                coordinates: routeObj.path_coordinates
+            });
+            const aiData = await makePostRequest(aiServiceUrl, postData);
+            
+            return {
+                ...routeObj,
+                safety_score: aiData.overall_safety_score || 80,
+                ai_analysis: aiData
+            };
+        } catch(e) {
+            console.warn(`AI Analysis failed for route ${routeObj.id}, using fallback data.`);
+            return {
+                ...routeObj,
+                safety_score: 80,
+                ai_analysis: null
+            };
+        }
+    });
+
+    const evaluatedRoutes = await Promise.all(analysisPromises);
+
+    // Sort by safety score (highest first)
+    evaluatedRoutes.sort((a, b) => b.safety_score - a.safety_score);
+
+    // The Safest Route is index 0
     let safestRoute = {
         source: srcCoords.name,
         destination: dstCoords.name,
-        path_coordinates: pathCoords
+        path_coordinates: evaluatedRoutes[0].path_coordinates
     };
-    let highestScore = 80; // Fallback score
-    let aiAnalysis = null;
 
-    try {
-        const postData = JSON.stringify({
-            time_of_day_hour: new Date().getHours(),
-            coordinates: pathCoords
-        });
-        
-        const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000/predict_safety';
-        const aiData = await makePostRequest(aiServiceUrl, postData);
-        if(aiData && aiData.overall_safety_score) {
-            highestScore = aiData.overall_safety_score;
-            aiAnalysis = aiData;
-        }
-
-    } catch(e) {
-        console.error("Failed to reach Python AI Microservice:", e.message);
-    }
-
-    // 4. Return the exact mapped route and AI data to React 
+    // 4. Return the primary mapped route, its specific analysis, AND the alternative array to React 
     res.json({ 
         route: safestRoute, 
-        safety_score: highestScore,
-        ai_analysis: aiAnalysis 
+        safety_score: evaluatedRoutes[0].safety_score,
+        ai_analysis: evaluatedRoutes[0].ai_analysis,
+        alternatives: evaluatedRoutes // Expose all routes for the Custom Comparison UI
     });
 
   } catch (error) {

@@ -1,0 +1,6 @@
+{
+  "stack": "Error: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent: [404 Not Found] models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.\n    at handleResponseNotOk (file:///C:/Users/RUDRA_JOSHI/OneDrive/Desktop/ai_marathon/node_modules/@google/generative-ai/dist/index.mjs:412:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async makeRequest (file:///C:/Users/RUDRA_JOSHI/OneDrive/Desktop/ai_marathon/node_modules/@google/generative-ai/dist/index.mjs:385:9)\n    at async generateContent (file:///C:/Users/RUDRA_JOSHI/OneDrive/Desktop/ai_marathon/node_modules/@google/generative-ai/dist/index.mjs:830:22)\n    at async test (file:///C:/Users/RUDRA_JOSHI/OneDrive/Desktop/ai_marathon/testGemini.js:10:24)",
+  "message": "[GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent: [404 Not Found] models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.",
+  "status": 404,
+  "statusText": "Not Found"
+}

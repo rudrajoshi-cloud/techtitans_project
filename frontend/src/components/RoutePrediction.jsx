@@ -1,12 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
-import api from '../services/api';
+import api, { fetchHeatmapData } from '../services/api';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import 'leaflet.heat';
+
+// Fix for default Leaflet markers in Vite/React
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+    iconUrl: markerIcon,
+    iconRetinaUrl: markerIcon2x,
+    shadowUrl: markerShadow,
+});
 
 const RoutePrediction = () => {
   const [source, setSource] = useState('');
   const [destination, setDestination] = useState('');
   const [routeResult, setRouteResult] = useState(null);
+  const [selectedAltIndex, setSelectedAltIndex] = useState(0); // Track which of the 3 routes is highlighted
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // Quick Report Modal State
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportCategory, setReportCategory] = useState("Harassment reported");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
 
   // Ratings State
   const [communityRating, setCommunityRating] = useState({ average_rating: 0, total_ratings: 0 });
@@ -18,21 +39,24 @@ const RoutePrediction = () => {
   const mapInstance = useRef(null);
   const routingLine = useRef(null);
   const markers = useRef([]);
+  const heatLayerRef = useRef(null);
+  const rawPinsLayerRef = useRef(null);
+  
+  const [showHeatmap, setShowHeatmap] = useState(true);
+  const [reportData, setReportData] = useState({ heatLayer: [], rawReports: [] });
 
   // Setup the map when coordinates are available
   useEffect(() => {
     if (routeResult && routeResult.route?.path_coordinates?.length > 0) {
       if (!mapInstance.current) {
-        mapInstance.current = window.L.map(mapContainerRef.current);
-        window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        mapInstance.current = L.map(mapContainerRef.current);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(mapInstance.current);
       }
 
       // Clear previous layers
-      if (routingLine.current) {
-        mapInstance.current.removeLayer(routingLine.current);
-      }
+      if (routingLine.current) mapInstance.current.removeLayer(routingLine.current);
       markers.current.forEach(m => mapInstance.current.removeLayer(m));
       markers.current = [];
 
@@ -42,20 +66,88 @@ const RoutePrediction = () => {
 
       // Draw polyline
       let color = '#22c55e'; // green 
-      if (routeResult.safety_score < 70) color = '#eab308'; // yellow
-      if (routeResult.safety_score < 40) color = '#ef4444'; // red
+      const activeScore = routeResult.alternatives ? routeResult.alternatives[selectedAltIndex].safety_score : routeResult.safety_score;
+      if (activeScore < 70) color = '#eab308'; // yellow
+      if (activeScore < 40) color = '#ef4444'; // red
 
-      routingLine.current = window.L.polyline(latlngs, { color, weight: 6, opacity: 0.8 }).addTo(mapInstance.current);
+      routingLine.current = L.polyline(latlngs, { color, weight: 6, opacity: 0.8 }).addTo(mapInstance.current);
 
       // Add markers for Start and End
-      const startMarker = window.L.marker(latlngs[0]).addTo(mapInstance.current).bindPopup('Origin');
-      const endMarker = window.L.marker(latlngs[latlngs.length - 1]).addTo(mapInstance.current).bindPopup('Destination');
+      const startMarker = L.marker(latlngs[0]).addTo(mapInstance.current).bindPopup('Origin');
+      const endMarker = L.marker(latlngs[latlngs.length - 1]).addTo(mapInstance.current).bindPopup('Destination');
       markers.current = [startMarker, endMarker];
+
+      // Render Heatmap and Pins if data exists
+      renderIncidentsMap(reportData);
 
       // Fit map to show the whole route
       mapInstance.current.fitBounds(routingLine.current.getBounds(), { padding: [30, 30] });
     }
   }, [routeResult]);
+
+  const renderIncidentsMap = (data) => {
+    if (!mapInstance.current) return;
+    
+    // Clear old layers
+    if (heatLayerRef.current) mapInstance.current.removeLayer(heatLayerRef.current);
+    if (rawPinsLayerRef.current) mapInstance.current.removeLayer(rawPinsLayerRef.current);
+
+    if (showHeatmap && data.heatLayer?.length > 0) {
+        // High performance heatmap layer
+        heatLayerRef.current = L.heatLayer(data.heatLayer, {
+            radius: 25,
+            blur: 15,
+            maxZoom: 14,
+            gradient: {0.4: 'green', 0.65: 'yellow', 1: 'red'}
+        }).addTo(mapInstance.current);
+    }
+    
+    // Create discrete pins
+    if (!showHeatmap && data.rawReports?.length > 0) {
+        rawPinsLayerRef.current = L.layerGroup().addTo(mapInstance.current);
+        
+        data.rawReports.forEach(report => {
+            let color = 'gray';
+            if(report.category.includes('Harassment') || report.category.includes('Unsafe')) color = 'red';
+            else if(report.category.includes('Suspicious') || report.category.includes('lighting')) color = 'orange';
+            else if(report.category.includes('Safe')) color = 'green';
+            
+            const circleMarker = L.circleMarker([report.latitude, report.longitude], {
+                radius: 8,
+                fillColor: color,
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            });
+            
+            circleMarker.bindPopup(`<b>${report.category}</b><br/>${report.description || 'No description provided.'}`);
+            rawPinsLayerRef.current.addLayer(circleMarker);
+        });
+    }
+  };
+
+  // Effect specifically for swapping routes without fully reloading
+  useEffect(() => {
+     if(routeResult?.alternatives && mapInstance.current && routingLine.current) {
+         const newPath = routeResult.alternatives[selectedAltIndex].path_coordinates;
+         const latlngs = newPath.map(coord => [coord.lat, coord.lng]);
+         
+         const activeScore = routeResult.alternatives[selectedAltIndex].safety_score;
+         let color = '#22c55e'; 
+         if (activeScore < 70) color = '#eab308'; 
+         if (activeScore < 40) color = '#ef4444'; 
+
+         routingLine.current.setLatLngs(latlngs);
+         routingLine.current.setStyle({ color });
+         mapInstance.current.fitBounds(routingLine.current.getBounds(), { padding: [30, 30] });
+     }
+  }, [selectedAltIndex]);
+
+  // Trigger Re-render when toggle is flipped
+  useEffect(() => {
+     renderIncidentsMap(reportData);
+  }, [showHeatmap, reportData]);
 
   const handlePredict = async (e) => {
     e.preventDefault();
@@ -68,6 +160,7 @@ const RoutePrediction = () => {
     try {
       const response = await api.post('/predictRoute', { source, destination });
       setRouteResult(response.data);
+      setSelectedAltIndex(0); // Default to the first (safest) route
       
       // Fetch Community Safety Ratings for this specific route
       try {
@@ -77,6 +170,14 @@ const RoutePrediction = () => {
          setRatingSubmitted(false);
       } catch (ratingErr) {
          console.warn("Could not fetch route ratings", ratingErr);
+      }
+
+      // Fetch dynamic Heatmap / Incident Data
+      try {
+         const heatDataRes = await fetchHeatmapData();
+         setReportData(heatDataRes.data);
+      } catch (err) {
+         console.warn("Failed to fetch Map Heatmap Data", err);
       }
       
     } catch (err) {
@@ -102,6 +203,40 @@ const RoutePrediction = () => {
      } catch (err) {
         console.error("Failed to submit rating", err);
      }
+  };
+
+  const handleQuickReport = async (e) => {
+    e.preventDefault();
+    if (!navigator.geolocation) {
+       alert("Geolocation is not supported. Please use the main form below.");
+       return;
+    }
+    
+    setReportSubmitting(true);
+    navigator.geolocation.getCurrentPosition(async (position) => {
+       try {
+          await api.post('/reportIncident', {
+            category: reportCategory,
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            description: "Quick Report from Map UI"
+          });
+          
+          alert("Safety report submitted anonymously.");
+          setShowReportModal(false);
+          
+          // Refresh map data
+          const heatDataRes = await fetchHeatmapData();
+          setReportData(heatDataRes.data);
+       } catch (err) {
+          alert(err.response?.data?.error || "Failed to submit report.");
+       } finally {
+          setReportSubmitting(false);
+       }
+    }, () => {
+       alert("Could not pull location for quick report.");
+       setReportSubmitting(false);
+    });
   };
 
   return (
@@ -222,6 +357,48 @@ const RoutePrediction = () => {
              </div>
           )}
 
+           {/* Multi-Route Selection Cards */}
+           {routeResult.alternatives && routeResult.alternatives.length > 1 && (
+             <div className="mt-8 mb-4">
+                <h4 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Compare Routes</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                   {routeResult.alternatives.map((alt, idx) => {
+                       const isSelected = selectedAltIndex === idx;
+                       let badgeTemplate = 'Safest';
+                       let badgeColor = 'bg-emerald-100 text-emerald-700';
+                       
+                       if(idx === 1) { badgeTemplate = 'Balanced'; badgeColor = 'bg-blue-100 text-blue-700'; }
+                       if(idx === 2) { badgeTemplate = 'Fastest'; badgeColor = 'bg-purple-100 text-purple-700'; }
+
+                       return (
+                           <div 
+                              key={alt.id} 
+                              onClick={() => setSelectedAltIndex(idx)}
+                              className={`p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 relative flex flex-col justify-between ${isSelected ? 'border-indigo-600 bg-indigo-50/50 shadow-md transform scale-[1.02] z-10' : 'border-gray-100 bg-white hover:border-gray-300'}`}
+                           >
+                               {isSelected && <div className="absolute top-3 right-3 w-3 h-3 rounded-full bg-indigo-600 shadow-[0_0_8px_rgba(79,70,229,0.5)]"></div>}
+                               <div>
+                                  <span className={`inline-block px-2.5 py-1 rounded-md text-[10px] font-black uppercase mb-3 ${badgeColor}`}>{badgeTemplate} Route</span>
+                               </div>
+                               <div className="flex justify-between items-end mt-2">
+                                  <div>
+                                     <p className="text-3xl font-black text-gray-900 leading-none">{Math.round(alt.duration / 60)}<span className="text-sm font-bold text-gray-500 ml-1">min</span></p>
+                                     <p className="text-xs font-semibold text-gray-500 mt-1">{(alt.distance / 1000).toFixed(1)} km</p>
+                                  </div>
+                                  <div className="text-right">
+                                     <p className={`text-2xl font-black leading-none ${alt.safety_score >= 80 ? 'text-emerald-600' : alt.safety_score >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                                        {alt.safety_score}%
+                                     </p>
+                                     <p className="text-[10px] uppercase font-bold text-gray-400 tracking-wider mt-1">Safety</p>
+                                  </div>
+                               </div>
+                           </div>
+                       );
+                   })}
+                </div>
+             </div>
+           )}
+
           {/* Community Feedback Extension */}
           {routeResult.route && (
              <div className="mt-6 border border-gray-100 rounded-2xl p-6 bg-white shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] transition-all">
@@ -276,6 +453,63 @@ const RoutePrediction = () => {
                     Real-time
                  </span>
               </div>
+              
+              {/* Map Controls */}
+              <div className="flex gap-4 mb-4">
+                  <button 
+                    onClick={() => setShowHeatmap(true)}
+                    className={`flex-1 py-2 text-sm font-bold rounded-lg transition sm:flex-none sm:px-6 
+                      ${showHeatmap ? 'bg-orange-100 text-orange-700 border-2 border-orange-500' : 'bg-gray-50 text-gray-500 border-2 border-transparent hover:bg-gray-100'}`}
+                  >
+                     🔥 Density Heatmap
+                  </button>
+                  <button 
+                    onClick={() => setShowHeatmap(false)}
+                    className={`flex-1 py-2 text-sm font-bold rounded-lg transition sm:flex-none sm:px-6 
+                      ${!showHeatmap ? 'bg-indigo-100 text-indigo-700 border-2 border-indigo-500' : 'bg-gray-50 text-gray-500 border-2 border-transparent hover:bg-gray-100'}`}
+                  >
+                     📌 Incident Pins
+                  </button>
+                  <button 
+                    onClick={() => setShowReportModal(!showReportModal)}
+                    className="flex-1 py-2 text-sm font-bold rounded-lg transition sm:flex-none sm:px-4 bg-red-100 text-red-700 border-2 border-red-500 hover:bg-red-200 ml-auto"
+                  >
+                     🚨 Report Area
+                  </button>
+              </div>
+
+              {/* Quick Report Dropdown Modal */}
+              {showReportModal && (
+                  <div className="bg-white border-2 border-red-100 shadow-xl rounded-xl p-4 mb-4 animate-fade-in relative z-20">
+                     <div className="flex justify-between items-center mb-3">
+                        <h4 className="text-sm font-bold text-gray-900">Pin Danger at Current Location</h4>
+                        <button type="button" onClick={() => setShowReportModal(false)} className="text-gray-400 hover:text-gray-600">
+                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                     </div>
+                     <form onSubmit={handleQuickReport} className="flex flex-col sm:flex-row gap-3">
+                         <select 
+                           className="flex-grow p-2.5 bg-gray-50 border border-gray-200 text-sm font-semibold text-gray-900 rounded-lg focus:ring-2 focus:ring-red-500"
+                           value={reportCategory}
+                           onChange={(e) => setReportCategory(e.target.value)}
+                         >
+                           <option value="Harassment reported">👀 Harassment</option>
+                           <option value="Suspicious activity">🕵️ Suspicious Activity</option>
+                           <option value="Poor lighting">🌑 Poor Lighting</option>
+                           <option value="Unsafe area">⚠️ High Danger / Assault</option>
+                           <option value="Safe zone">🛡️ Mark as Safe Zone</option>
+                         </select>
+                         <button 
+                           type="submit" 
+                           disabled={reportSubmitting}
+                           className="py-2.5 px-6 bg-red-600 hover:bg-red-700 text-white font-bold text-sm rounded-lg shadow-md transition disabled:bg-red-300 whitespace-nowrap"
+                         >
+                            {reportSubmitting ? 'Submitting...' : 'Drop Pin Now'}
+                         </button>
+                     </form>
+                  </div>
+              )}
+
               <div className="rounded-2xl shadow-lg border-4 border-white overflow-hidden bg-gray-100 relative">
                  <div className="absolute inset-0 border border-gray-200/50 rounded-2xl pointer-events-none z-10"></div>
                  <div 

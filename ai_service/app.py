@@ -58,14 +58,28 @@ def predict_safety(req: RouteRequest):
         average_safety = sum(safety_scores) / len(safety_scores)
         min_safety = min(safety_scores)
 
-        # Apply a basic time penalty if requested during night (e.g. hour >= 20 or <= 4)
+        # Apply the new 0-100 weighted formula based on environmental factors
+        # 1. Normalize environmental metrics to a 0-10 (or 0-100) scale heuristically
+        lighting_score_normalized = (min(avg_lighting, 10.0) / 10.0) * 100
+        density_score_normalized = (min(avg_density, 10.0) / 10.0) * 100
+        
+        # 2. Calculate dynamic penalties based on the features
+        crime_penalty = (min(avg_crime_rate, 10.0) / 10.0) * 40    # Up to 40 points deduced for high crime
+        police_penalty = (min(avg_police_dist, 10.0) / 10.0) * 20  # Up to 20 points deduced for long distance to police
+        lighting_penalty = ((100 - lighting_score_normalized) / 100) * 30 # Up to 30 points deduced for bad lighting
+        
+        base_score = 100
         time_penalty = 0
-        if req.time_of_day_hour >= 20 or req.time_of_day_hour <= 4:
-            time_penalty = 10
-            avg_lighting = max(1.0, avg_lighting * 0.5) # cut lighting score in half digitally
+        
+        # 3. Apply time of day multipliers (Nighttime makes lighting and crime matter more)
+        if req.time_of_day_hour >= 19 or req.time_of_day_hour <= 5:
+            time_penalty = 15
+            lighting_penalty *= 1.5
+            crime_penalty *= 1.2
+            avg_lighting = max(1.0, avg_lighting * 0.5) # visually cut avg lighting for the UI metrics
             
-        final_route_score = int((average_safety * 0.7) + (min_safety * 0.3)) - time_penalty
-        final_route_score = max(5, min(99, final_route_score))
+        final_route_score = base_score - crime_penalty - lighting_penalty - police_penalty + (density_score_normalized * 0.1) - time_penalty
+        final_route_score = int(max(5, min(99, final_route_score)))
 
         # Calculate user's exact custom Night Safety Formula
         # night_safety = (0.4*lighting) + (0.2*density) - (0.2*crime) - (0.2*police_dist)

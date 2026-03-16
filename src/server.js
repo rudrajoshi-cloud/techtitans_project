@@ -7,6 +7,7 @@ import routeRoutes from './routes/routeRoutes.js';
 import incidentRoutes from './routes/incidentRoutes.js';
 import sosRoutes from './routes/sosRoutes.js';
 import routeRatingRoutes from './routes/routeRatingRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.use('/api', routeRoutes);
 app.use('/api', incidentRoutes);
 app.use('/api', sosRoutes);
 app.use('/api', routeRatingRoutes);
+app.use('/api', chatRoutes);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
